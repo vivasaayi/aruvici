@@ -1,0 +1,31 @@
+# Local pipeline registry. Copy to platform.toml and replace machine paths.
+# This is separate from apps.toml (the existing deployment registry).
+# Use the SAME state_dir as any legacy apps.toml builds on this Mac.
+state_dir = "/Users/YOU/Library/Application Support/aruvici"
+
+[[targets]]
+id = "desktop"
+repository = "/Users/YOU/work/desktop"
+profile = "rust-tauri@1"
+root = "." # Relative target subdirectory within the Git repository.
+
+[targets.inputs]
+cargo_manifest = "src-tauri/Cargo.toml"
+frontend_root = "." # Must contain package.json and package-lock.json.
+tauri_config = "src-tauri/tauri.conf.json"
+bundle_id = "com.example.desktop"
+architecture = "aarch64-apple-darwin"
+artifact = "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Desktop.app"
+# Adopt docs/onboarding.md isolation before changing this to "true".
+isolation_acknowledged = "false"
+
+# Additional planning-only profiles (execution is explicitly blocked):
+# rust-docker@1 inputs:
+#   cargo_manifest = "Cargo.toml", dockerfile = "Dockerfile", context = "."
+#   platform = "linux/arm64", image = "my-image"
+# native-ios@1 inputs:
+#   project = "App.xcodeproj", scheme = "App", configuration = "Debug"
+#   destination = "platform=iOS Simulator,name=iPhone 16"
+# native-android@1 inputs:
+#   wrapper = "gradlew", module = "app", variant = "Debug"
+# No arbitrary command inputs are accepted. Paths are relative to target root.

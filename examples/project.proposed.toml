@@ -1,0 +1,45 @@
+# Proposed portable project format, NOT accepted by the current CLI.
+# Local registry binds this project ID to a repository and approves profile inputs.
+schema_version = 1
+project_id = "example-product"
+
+[[targets]]
+id = "desktop"
+profile = "rust-tauri@1"
+root = "desktop"
+cargo_manifest = "src-tauri/Cargo.toml"
+frontend_root = "."
+tauri_config = "src-tauri/tauri.conf.json"
+architecture = "aarch64-apple-darwin"
+# Local registry supplies production destination, data paths and signing profile.
+
+[[targets]]
+id = "api"
+profile = "rust-docker@1"
+root = "api"
+cargo_manifest = "Cargo.toml"
+dockerfile = "Dockerfile"
+build_context = "."
+test_stage = "test"
+package_stage = "runtime"
+platform = "linux/arm64"
+# Dockerfile must define these user-supplied stages. No arbitrary pipeline commands.
+
+[[targets]]
+id = "iphone"
+profile = "native-ios@1"
+root = "ios"
+xcode_project = "Example.xcodeproj"
+scheme = "Example"
+configuration = "Debug"
+package_kind = "simulator"
+# Machine registry selects an installed simulator destination.
+
+[[targets]]
+id = "android"
+profile = "native-android@1"
+root = "android"
+gradle_wrapper = "gradlew"
+module = "app"
+variant = "debug"
+package_kind = "apk"

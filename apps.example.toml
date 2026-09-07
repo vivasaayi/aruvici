@@ -1,0 +1,28 @@
+# Copy to apps.toml, replace paths/repository, then `aruvici validate`.
+# Use ONE state directory for all builds and runner workflows on this Mac.
+state_dir = "/Users/YOUR_USER/Library/Application Support/aruvici"
+
+[[apps]]
+name = "notes"
+repository = "/Users/YOUR_USER/work/notes"
+github = "YOUR_ORG/notes"
+bundle_id = "com.example.notes"
+architecture = "aarch64-apple-darwin"
+artifact = "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Notes.app"
+production_app = "/Applications/Notes.app"
+dev_data = "/Users/YOUR_USER/Library/Application Support/com.example.notes.dev"
+production_data = "/Users/YOUR_USER/Library/Application Support/com.example.notes"
+# Set true only after following docs/onboarding.md and auditing DB paths.
+isolation_acknowledged = false
+# static_dev_port = 1420 # Optional reservation; omit for dynamic allocation.
+install_command = ["npm", "ci"]
+frontend_command = ["npm", "run", "build"]
+test_command = ["cargo", "test", "--locked", "--manifest-path", "src-tauri/Cargo.toml"]
+tauri_command = ["npm", "exec", "--", "tauri"]
+vite_command = ["npm", "exec", "--", "vite"]
+
+[apps.signing]
+identity = "-"
+# Later: identity = "Developer ID Application: Your Name (TEAMID)"
+# team_id = "TEAMID"
+# notary_profile = "aruvici-notary" # Keychain profile name, never a password.

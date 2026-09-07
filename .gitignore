@@ -1,0 +1,9 @@
+/target/
+/state/
+*.sqlite*
+.DS_Store
+*.p12
+*.p8
+*.mobileprovision
+.env
+
