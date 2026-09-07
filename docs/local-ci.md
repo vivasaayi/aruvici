@@ -5,7 +5,7 @@ a Jenkins server, and a GitHub runner are not required. Source comes from the
 registered local Git repository; each run records a resolved commit and builds
 an isolated clone. Uncommitted edits are not included or overwritten.
 
-This release implements the local Tauri backend and a Unix-socket integration
+This release implements local Tauri and Docker backends plus a Unix-socket integration
 surface. It does not modify Aruvi Studio or provide its proposed live CI screens.
 The typed [Studio client](../integration/ci-client.ts) wraps the implemented v1
 protocol; provide a Studio Rust/Tauri bridge as its transport. The earlier
@@ -108,14 +108,38 @@ Fixed profile commands still execute repository-controlled npm scripts and Rust
 build scripts. Approval is a pipeline policy decision, not an operating-system
 sandbox. Builds use the invoking user's account and environment.
 
-## Other profile tags
+## Rust-Docker
 
-`rust-docker@1`, `native-ios@1` and `native-android@1` can produce inspectable plans
-and concrete missing-input issues. Each explicitly reports that adapter execution
-is unavailable and is blocked from queueing. They do not currently produce Docker
-images, IPA files, APKs or AABs. Their input keys are documented in the example
-registry. Additional Linux tests/scanning, simulator/emulator execution, signing
-and packaging adapters remain roadmap work.
+`rust-docker@1` executes the same required redacted secret scan, Rust formatting,
+Clippy and Rust tests before it invokes the user-supplied Dockerfile. It uses fixed
+`docker buildx build` arguments and exports a single OCI archive rather than loading
+or running a local production container:
+
+```text
+docker buildx build --platform linux/arm64 --file Dockerfile \
+  --tag configured-local-name --output type=oci,dest=.aruvici-image.oci CONTEXT
+```
+
+The archive must be a regular nonempty tar file containing `oci-layout`, `index.json`
+and at least one `blobs/sha256/` entry. Aruvici records its SHA-256, byte size,
+platform, immutable run manifest and checksum sidecar. A malformed export fails the
+run after retaining the captured archive as diagnostic evidence; it never becomes a
+promotion-ready result. Docker must already be installed and its daemon available to
+the local build account. Aruvici does not start Docker Desktop, publish an image,
+load an image into the daemon, mount host data into the build, or restart containers.
+
+The Dockerfile and build context are executable project code. Keep the configured
+context narrowly scoped and do not put secrets/production data in it. Linux runtime
+tests, image vulnerability scanning, SBOM generation, OCI registry publication and
+container deployment are not implemented in this adapter.
+
+## Native mobile profile tags
+
+`native-ios@1` and `native-android@1` can produce inspectable plans and concrete
+missing-input issues. Each explicitly reports that adapter execution is unavailable
+and is blocked from queueing. They do not currently produce IPA, APK or AAB files.
+Their input keys are documented in the example registry. Simulator/emulator execution,
+signing and packaging adapters remain roadmap work.
 
 ## Queue, service and history
 

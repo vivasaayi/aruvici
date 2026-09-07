@@ -117,7 +117,7 @@ fn execute_job(config: &PlatformConfig, store: &Store, job: &Value) -> Result<()
         .context("missing target")?;
     let target = config.target(name)?;
     let plan = target.plan()?;
-    if target.profile != "rust-tauri@1" {
+    if !matches!(target.profile.as_str(), "rust-tauri@1" | "rust-docker@1") {
         store.finish(
             id,
             "blocked",
@@ -246,7 +246,15 @@ fn execute_job(config: &PlatformConfig, store: &Store, job: &Value) -> Result<()
                     source.file_name().unwrap().to_string_lossy()
                 ));
                 fs::copy(&source, &dest)?;
-                store.artifact(id, &stage.id, "report", &dest)?;
+                let kind = if target.profile == "rust-docker@1"
+                    && stage.id == "package"
+                    && output == ".aruvici-image.oci"
+                {
+                    "package"
+                } else {
+                    "report"
+                };
+                store.artifact(id, &stage.id, kind, &dest)?;
             }
         }
         if let Err(e) = result {
@@ -264,34 +272,41 @@ fn execute_job(config: &PlatformConfig, store: &Store, job: &Value) -> Result<()
     }
     store.stage(id, "verify-package", "running", json!({}))?;
     let packaging = (|| -> Result<()> {
-        let bundle = base.join(
-            target
-                .inputs
-                .get("artifact")
-                .context("missing bundle artifact input")?,
-        );
-        let app = app_for(target, &bundle)?;
-        let version = artifact::bundle(&app, &bundle, &System)?;
-        let zip = root.join("app.zip");
-        artifact::pack(&bundle, &zip)?;
-        let hash = artifact::sha256(&zip)?;
-        artifact::verify(&app, &zip, &hash, &System)?;
-        let manifest = json!({"run_id":id,"target":target.id,"commit":commit,"profile":target.profile,"plan_digest":plan.digest,"sha256":hash,"version":version,"signature":"adhoc_verified"});
-        safety::create_new(
-            &root.join("manifest.json"),
-            &serde_json::to_vec_pretty(&manifest)?,
-        )?;
-        safety::create_new(
-            &root.join("app.zip.sha256"),
-            format!("{hash}  app.zip\n").as_bytes(),
-        )?;
-        for (file, kind) in [
-            ("app.zip", "package"),
-            ("manifest.json", "manifest"),
-            ("app.zip.sha256", "checksum"),
-        ] {
-            store.artifact(id, "verify-package", kind, &root.join(file))?;
-        }
+        match target.profile.as_str() {
+            "rust-tauri@1" => {
+                let bundle = base.join(
+                    target
+                        .inputs
+                        .get("artifact")
+                        .context("missing bundle artifact input")?,
+                );
+                let app = app_for(target, &bundle)?;
+                let version = artifact::bundle(&app, &bundle, &System)?;
+                let zip = root.join("app.zip");
+                artifact::pack(&bundle, &zip)?;
+                let hash = artifact::sha256(&zip)?;
+                artifact::verify(&app, &zip, &hash, &System)?;
+                let manifest = json!({"run_id":id,"target":target.id,"commit":commit,"profile":target.profile,"plan_digest":plan.digest,"sha256":hash,"version":version,"signature":"adhoc_verified"});
+                safety::create_new(
+                    &root.join("manifest.json"),
+                    &serde_json::to_vec_pretty(&manifest)?,
+                )?;
+                safety::create_new(
+                    &root.join("app.zip.sha256"),
+                    format!("{hash}  app.zip\n").as_bytes(),
+                )?;
+                for (file, kind) in [
+                    ("app.zip", "package"),
+                    ("manifest.json", "manifest"),
+                    ("app.zip.sha256", "checksum"),
+                ] {
+                    store.artifact(id, "verify-package", kind, &root.join(file))?;
+                }
+                Ok(())
+            }
+            "rust-docker@1" => finalize_oci(store, id, target, &plan, commit, &root),
+            _ => unreachable!(),
+        }?;
         Ok(())
     })();
     store.stage(
@@ -309,6 +324,70 @@ fn execute_job(config: &PlatformConfig, store: &Store, job: &Value) -> Result<()
         bail!("run cancelled during packaging; artifacts are not promotable");
     }
     store.finish(id, "passed", None)?;
+    Ok(())
+}
+
+fn finalize_oci(
+    store: &Store,
+    id: i64,
+    target: &Target,
+    plan: &Plan,
+    commit: &str,
+    root: &Path,
+) -> Result<()> {
+    let archive = root.join("package-0-.aruvici-image.oci");
+    safety::no_symlinks(&archive)?;
+    let size = fs::metadata(&archive)?.len();
+    if size == 0 {
+        bail!("OCI export is empty");
+    }
+    let listing = System.output(
+        &args(&[
+            "/usr/bin/tar",
+            "-tf",
+            archive.to_str().context("non-UTF8 OCI archive")?,
+        ]),
+        root,
+    )?;
+    let mut index = false;
+    let mut layout = false;
+    let mut blob = false;
+    for entry in listing.lines() {
+        let path = Path::new(entry);
+        safety::relative(path)?;
+        index |= entry == "index.json";
+        layout |= entry == "oci-layout";
+        blob |= entry.starts_with("blobs/sha256/");
+    }
+    if !(index && layout && blob) {
+        bail!("export is not a complete OCI image archive");
+    }
+    let hash = artifact::sha256(&archive)?;
+    let manifest = json!({"run_id":id,"target":target.id,"commit":commit,"profile":target.profile,"plan_digest":plan.digest,"sha256":hash,"oci_archive":archive.file_name(),"size_bytes":size,"platform":target.inputs.get("platform")});
+    safety::create_new(
+        &root.join("manifest.json"),
+        &serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    safety::create_new(
+        &root.join("image.oci.sha256"),
+        format!(
+            "{hash}  {}\n",
+            archive.file_name().unwrap().to_string_lossy()
+        )
+        .as_bytes(),
+    )?;
+    store.artifact(
+        id,
+        "verify-package",
+        "manifest",
+        &root.join("manifest.json"),
+    )?;
+    store.artifact(
+        id,
+        "verify-package",
+        "checksum",
+        &root.join("image.oci.sha256"),
+    )?;
     Ok(())
 }
 

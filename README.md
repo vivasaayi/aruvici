@@ -5,8 +5,8 @@ applications on an Apple Silicon Mac. No daemon or dashboard is required.
 
 The new [fully local CI commands](docs/local-ci.md) implement approved profiles,
 a durable local queue, a foreground worker/service, captured stage logs/artifacts,
-a private socket API and visual history snapshots. Rust-Tauri executes today;
-Rust-Docker/native iOS/native Android provide plans with execution explicitly blocked.
+a private socket API and visual history snapshots. Rust-Tauri and Rust-Docker
+execute today; native iOS/native Android provide plans with execution explicitly blocked.
 No GitHub Actions setup is needed for `aruvici ci`.
 
 The [Studio platform roadmap](docs/local-platform-plan.md) covers remaining native

@@ -333,9 +333,10 @@ impl Target {
                 }
                 stage(
                     "package",
-                    "Build Linux image",
+                    "Build and export OCI image",
                     vec![
                         "docker".into(),
+                        "buildx".into(),
                         "build".into(),
                         "--platform".into(),
                         platform,
@@ -343,10 +344,12 @@ impl Target {
                         dockerfile,
                         "--tag".into(),
                         image,
+                        "--output".into(),
+                        "type=oci,dest=.aruvici-image.oci".into(),
                         context,
                     ],
                     self.root.clone(),
-                    vec![],
+                    vec![".aruvici-image.oci".into()],
                 );
             }
             "native-ios@1" => {
@@ -417,7 +420,7 @@ impl Target {
             }
             _ => unreachable!(),
         }
-        if self.profile != "rust-tauri@1" {
+        if !matches!(self.profile.as_str(), "rust-tauri@1" | "rust-docker@1") {
             plan.issues.push(format!(
                 "{} adapter execution is not available yet; this profile is planning-only",
                 self.profile

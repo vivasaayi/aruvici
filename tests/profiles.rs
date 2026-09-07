@@ -110,7 +110,7 @@ fn approval_digest_changes_with_policy() {
 #[test]
 fn unsupported_adapters_never_appear_ready() {
     let dir = aruvici::safety::tempdir().unwrap();
-    for profile in ["rust-docker@1", "native-ios@1", "native-android@1"] {
+    for profile in ["native-ios@1", "native-android@1"] {
         let target = Target {
             id: "app".into(),
             repository: dir.path().into(),

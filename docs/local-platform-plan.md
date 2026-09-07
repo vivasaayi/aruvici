@@ -286,10 +286,10 @@ modal through typed CI previews rather than replacing agent artifact semantics.
 
 | Phase | Concrete change | Acceptance evidence |
 | --- | --- | --- |
-| 1. Local engine contract | Profile planner, target binding, schema migrations, per-stage events/logs, artifact registry; local queue is default and GitHub dispatch becomes optional legacy | Plan all four types without execution; reject unknown profiles/unsafe paths/missing required inputs; reconnect and replay failed-run evidence |
+| 1. Local engine contract | Profile planner, target binding, schema migrations, per-stage events/logs, artifact registry; local queue is default and GitHub dispatch becomes optional legacy | Implemented for Tauri/Docker; reject unknown profiles/unsafe paths/missing required inputs; reconnect and replay failed-run evidence |
 | 2. Desktop vertical slice | Upgrade existing Tauri executor to profile stages including lint/scans/reports; service/API and manual/Studio request adapter | One small audited Tauri app builds locally without GitHub Actions; duplicate submissions deduplicate; termination releases locks; failure blocks promotion; UI reads captured package/report |
 | 3. Studio views | Setup, queue, run detail and artifact library; add product/task CI references | Select tag, resolve inputs, queue committed checkpoint, watch stages, inspect test failure, download verified artifact; Studio restart loses no run history |
-| 4. Rust-Docker | Linux test execution, Dockerfile/context preflight, image scan/export, OCI artifact semantics | User-supplied Dockerfile builds locally; failing tests/scans gate release; export/import digest verified in isolated test environment; no implicit production container restart |
+| 4. Rust-Docker | Linux test execution, Dockerfile/context preflight, image scan/export, OCI artifact semantics | OCI export, structural verification and evidence capture implemented. Linux runtime tests/image scan/import testing remain. |
 | 5. Mobile | Separate iOS simulator and Android test/package adapters, reports and toolchain readiness | Simulator/emulator tests with disposable data; missing credentials shown clearly; Android debug and iOS simulator packages tested before distribution signing |
 | 6. Automation and promotion UI | Optional tag poller, baseline/ref-movement handling, launchd packaging, visual promotion/helper bridge | Sleep/restart/retry/ref-movement tests; one release worker; confirmed install/rollback only; no repeat deployment after interruption |
 

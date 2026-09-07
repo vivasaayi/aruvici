@@ -6,4 +6,5 @@
 *.p8
 *.mobileprovision
 .env
-
+apps.toml
+platform.toml
