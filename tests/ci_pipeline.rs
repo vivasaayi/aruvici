@@ -110,6 +110,7 @@ impl Fixture {
                     ("artifact".into(), "output/Fixture.app".into()),
                     ("isolation_acknowledged".into(), "true".into()),
                 ]),
+                preview: None,
             }],
         };
         let platform = root.join("platform.toml");

@@ -3,6 +3,7 @@ use crate::{
     artifact, ci_exec,
     ci_store::Store,
     config::{App, Signing},
+    deploy,
     process::{self, args, Executor, System},
     profiles::{Plan, PlatformConfig, Target},
     safety::{self, Lock},
@@ -322,6 +323,42 @@ fn execute_job(config: &PlatformConfig, store: &Store, job: &Value) -> Result<()
     packaging?;
     if store.cancelled(id)? || process::interrupted() {
         bail!("run cancelled during packaging; artifacts are not promotable");
+    }
+    if let Some(preview) = &target.preview {
+        store.stage(
+            id,
+            "preview",
+            "running",
+            json!({"destination":preview.destination}),
+        )?;
+        let app = app_for(target, &preview.destination)?;
+        let result = deploy::install_preview(
+            &app,
+            &root.join("app.zip"),
+            &artifact::sha256(&root.join("app.zip"))?,
+            &preview.destination,
+            &config.state_dir.join("previews"),
+            &System,
+        );
+        match result {
+            Ok(details) => {
+                let status = if details["status"] == "deferred" {
+                    "deferred"
+                } else {
+                    "passed"
+                };
+                store.stage(id, "preview", status, details)?;
+            }
+            Err(error) => {
+                store.stage(
+                    id,
+                    "preview",
+                    "failed",
+                    json!({"error":format!("{error:#}")}),
+                )?;
+                return Err(error);
+            }
+        }
     }
     store.finish(id, "passed", None)?;
     Ok(())

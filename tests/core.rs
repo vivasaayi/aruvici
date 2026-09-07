@@ -5,6 +5,7 @@ use aruvici::{
     deploy, dev,
     history::History,
     process::{args, Executor, System},
+    profiles::{PlatformConfig, Preview, Target},
     safety::Lock,
 };
 use std::{
@@ -83,6 +84,76 @@ fn rejects_symlinked_path() {
     let mut r = registry(t.path());
     r.state_dir = t.path().join("alias/state");
     assert!(r.validate().is_err());
+}
+#[test]
+fn preview_targets_are_confined_and_visibly_distinct() {
+    let t = temp();
+    let state = t.path().join("state");
+    let target = Target {
+        id: "notes-preview".into(),
+        repository: t.path().join("repository"),
+        profile: "rust-tauri@1".into(),
+        root: PathBuf::from("."),
+        inputs: [
+            ("bundle_id", "com.example.notes.preview"),
+            ("product_name", "Notes Preview"),
+            ("artifact", "target/Notes Preview.app"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect(),
+        preview: Some(Preview {
+            destination: state.join("previews/notes-preview/current/Notes Preview.app"),
+        }),
+    };
+    PlatformConfig {
+        state_dir: state.clone(),
+        targets: vec![target.clone()],
+    }
+    .validate()
+    .unwrap();
+
+    let mut outside = target.clone();
+    outside.preview.as_mut().unwrap().destination = t.path().join("Notes Preview.app");
+    assert!(PlatformConfig {
+        state_dir: state.clone(),
+        targets: vec![outside]
+    }
+    .validate()
+    .is_err());
+
+    let mut invisible = target;
+    invisible
+        .inputs
+        .insert("product_name".into(), "Notes".into());
+    assert!(!invisible.plan().unwrap().issues.is_empty());
+}
+#[test]
+fn preview_installation_refuses_production_and_outside_paths_before_mutation() {
+    let t = temp();
+    let app = registry(t.path()).apps.remove(0);
+    let root = t.path().join("state/previews");
+    let zip = t.path().join("candidate.zip");
+    fs::write(&zip, "not read for an invalid destination").unwrap();
+    assert!(deploy::install_preview(
+        &app,
+        &zip,
+        "not-a-hash",
+        Path::new("/Applications/Notes Preview.app"),
+        &root,
+        &System,
+    )
+    .is_err());
+    assert!(deploy::install_preview(
+        &app,
+        &zip,
+        "not-a-hash",
+        &t.path().join("outside/Notes Preview.app"),
+        &root,
+        &System,
+    )
+    .is_err());
+    assert!(!root.exists());
 }
 #[test]
 fn dynamic_ports_are_distinct_and_static_busy_fails() {

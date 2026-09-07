@@ -15,6 +15,7 @@ fn target(repo: PathBuf) -> Target {
             ),
             ("isolation_acknowledged".into(), "true".into()),
         ]),
+        preview: None,
     }
 }
 
@@ -117,6 +118,7 @@ fn unsupported_adapters_never_appear_ready() {
             root: ".".into(),
             profile: profile.into(),
             inputs: BTreeMap::new(),
+            preview: None,
         };
         let plan = target.plan().unwrap();
         assert!(plan

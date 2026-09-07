@@ -110,6 +110,7 @@ impl Fixture {
                     ("platform".into(), "linux/arm64".into()),
                     ("image".into(), "oci-fixture".into()),
                 ]),
+                preview: None,
             }],
         };
         let platform = root.join("platform.toml");

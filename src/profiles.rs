@@ -26,6 +26,17 @@ pub struct Target {
     pub root: PathBuf,
     #[serde(default)]
     pub inputs: BTreeMap<String, String>,
+    /// An opt-in, side-by-side test channel. This is deliberately separate from
+    /// production promotion and may only write below the manager state directory.
+    #[serde(default)]
+    pub preview: Option<Preview>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Preview {
+    /// The app bundle used for testing a successful candidate.
+    pub destination: PathBuf,
 }
 fn dot() -> PathBuf {
     PathBuf::from(".")
@@ -67,12 +78,37 @@ impl PlatformConfig {
             bail!("platform state cannot be inside /Applications");
         }
         let mut ids = HashSet::new();
+        let mut preview_destinations = HashSet::new();
         for target in &self.targets {
             if !ids.insert(target.id.to_lowercase()) {
                 bail!("duplicate target ID: {}", target.id);
             }
             if safety::overlaps(&self.state_dir, &target.repository) {
                 bail!("platform state must not overlap target repository");
+            }
+            if let Some(preview) = &target.preview {
+                safety::absolute(&preview.destination)?;
+                let preview_root = self.state_dir.join("previews");
+                if !preview.destination.starts_with(&preview_root)
+                    || preview.destination.extension().and_then(|s| s.to_str()) != Some("app")
+                {
+                    bail!(
+                        "preview destination for {} must be an .app below {}",
+                        target.id,
+                        preview_root.display()
+                    );
+                }
+                if !preview_destinations
+                    .insert(preview.destination.to_string_lossy().to_lowercase())
+                {
+                    bail!(
+                        "duplicate preview destination: {}",
+                        preview.destination.display()
+                    );
+                }
+                if target.profile != "rust-tauri@1" {
+                    bail!("preview delivery is currently supported only by rust-tauri@1");
+                }
             }
             target.plan()?;
         }
@@ -114,6 +150,7 @@ impl Target {
                 "architecture",
                 "artifact",
                 "isolation_acknowledged",
+                "product_name",
             ],
             "rust-docker@1" => &[
                 "cargo_manifest",
@@ -272,6 +309,24 @@ impl Target {
                 if value("isolation_acknowledged", "false") != "true" {
                     plan.issues.push("adopt development/test/production data isolation, then set isolation_acknowledged = 'true'".into());
                 }
+                if self.preview.is_some() {
+                    if !bundle.ends_with(".preview") {
+                        plan.issues.push(
+                            "preview targets must use a distinct bundle_id ending in .preview"
+                                .into(),
+                        );
+                    }
+                    let product_name = value("product_name", "");
+                    if !product_name.contains("Preview") {
+                        plan.issues.push("preview targets require product_name containing 'Preview' so the candidate is visibly labeled".into());
+                    }
+                    if Path::new(&artifact).file_name().and_then(|n| n.to_str())
+                        != Some(&format!("{product_name}.app"))
+                    {
+                        plan.issues
+                            .push("preview artifact filename must match product_name.app".into());
+                    }
+                }
                 let frontend_cwd = self.root.join(&frontend);
                 stage(
                     "dependencies",
@@ -291,7 +346,12 @@ impl Target {
                 // Run the CLI at target root; npm resolves the checked-in frontend binary explicitly.
                 let executable = Path::new(&frontend).join("node_modules/.bin/tauri");
                 let executable = format!("./{}", executable.display());
-                let override_json = serde_json::json!({"identifier": bundle, "build": {"beforeBuildCommand": "", "beforeDevCommand": "", "devUrl": null}, "bundle": {"macOS": {"signingIdentity": "-"}}}).to_string();
+                let product_name = self.inputs.get("product_name").cloned();
+                let mut override_value = serde_json::json!({"identifier": bundle, "build": {"beforeBuildCommand": "", "beforeDevCommand": "", "devUrl": null}, "bundle": {"macOS": {"signingIdentity": "-"}}});
+                if let Some(product_name) = product_name {
+                    override_value["productName"] = product_name.into();
+                }
+                let override_json = override_value.to_string();
                 stage(
                     "package",
                     "Build ad-hoc signed macOS app",

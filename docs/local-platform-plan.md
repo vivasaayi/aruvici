@@ -7,6 +7,10 @@ foreground service, stage evidence, private API and snapshot visualization. See
 [implemented behavior and limits](local-ci.md). Live Studio screens, additional
 execution adapters and automatic Git tag polling below remain planned.
 
+An opt-in `rust-tauri@1` Preview delivery channel is also implemented. It installs
+only a distinctly named and identified candidate below manager state after all
+gates pass; it is not production promotion. See [Preview channel](preview-channel.md).
+
 ## Product contract
 
 Register a repository, select a build type, fill in its required packaging settings,

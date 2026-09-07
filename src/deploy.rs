@@ -229,6 +229,92 @@ pub fn promote(
     Ok(serde_json::json!({"promotion":details,"backup":backup,"status":"installed"}))
 }
 
+/// Install a verified test candidate below a manager-owned preview root. Unlike
+/// `promote`, this never writes to /Applications and has no access to production
+/// application data. It is used only after a target explicitly opted into Preview.
+/// A running candidate is left untouched and reported as deferred.
+pub fn install_preview(
+    app: &App,
+    zip: &Path,
+    hash: &str,
+    destination: &Path,
+    preview_root: &Path,
+    exec: &impl Executor,
+) -> Result<serde_json::Value> {
+    safety::absolute(preview_root)?;
+    safety::absolute(destination)?;
+    if !destination.starts_with(preview_root)
+        || destination.extension().and_then(|s| s.to_str()) != Some("app")
+        || destination.starts_with("/Applications")
+    {
+        bail!("preview destination must be an .app below the configured preview root");
+    }
+    safety::no_symlinks(zip)?;
+    safety::no_symlinks(destination)?;
+    let mut candidate = app.clone();
+    candidate.production_app = destination.into();
+    if is_running(&candidate, exec)? {
+        return Ok(
+            serde_json::json!({"status":"deferred","reason":"preview application is running","destination":destination}),
+        );
+    }
+    let tmp = safety::tempdir()?;
+    let input = tmp.path().join("input.zip");
+    fs::copy(zip, &input)?;
+    artifact::checksum(&input, hash)?;
+    let name = destination
+        .file_name()
+        .context("preview destination has no filename")?;
+    artifact::extract(
+        &input,
+        name.to_str().context("invalid preview bundle name")?,
+        tmp.path(),
+    )?;
+    let extracted = tmp.path().join(name);
+    artifact::inherit_quarantine(zip, &extracted)?;
+    artifact::bundle(&candidate, &extracted, exec)?;
+
+    let root = preview_root.join(&app.name);
+    safety::no_symlinks(&root)?;
+    fs::create_dir_all(root.join("backups"))?;
+    fs::create_dir_all(
+        destination
+            .parent()
+            .context("preview destination has no parent")?,
+    )?;
+    if root.join("transaction.json").exists() {
+        bail!("unfinished preview transaction; recover it before installing another candidate");
+    }
+    let _lock = Lock::acquire(&root.join("preview.lock"), false)?;
+    let had_previous = destination.exists();
+    let stage = root.join(format!("stage-{}", safety::stamp()));
+    fs::create_dir(&stage)?;
+    let staged = stage.join(name);
+    exec.run(
+        &args(&[
+            "/usr/bin/ditto",
+            extracted.to_str().context("non-UTF8 extracted preview")?,
+            staged.to_str().context("non-UTF8 preview stage")?,
+        ]),
+        &root,
+        &[],
+    )?;
+    let backup = root
+        .join("backups")
+        .join(format!("{}.app", safety::stamp()));
+    transaction(
+        destination,
+        &staged,
+        &backup,
+        &root.join("transaction.json"),
+        |path| artifact::bundle(&candidate, path, exec).map(|_| ()),
+        || is_running(&candidate, exec),
+    )?;
+    Ok(
+        serde_json::json!({"status":"installed","destination":destination,"backup":if had_previous { Some(backup) } else { None::<PathBuf> }}),
+    )
+}
+
 pub fn rollback(
     app: &App,
     backup_name: &str,
