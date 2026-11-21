@@ -1,7 +1,13 @@
 use anyhow::{bail, Context, Result};
 use std::{
     fs::{self, File, OpenOptions},
-    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, OpenOptionsExt},
+        },
+    },
     path::{Component, Path},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -57,6 +63,45 @@ pub fn no_symlinks(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Open each path component relative to an already opened directory. This
+/// prevents a component being replaced by a symlink between inspection and use.
+pub fn open_regular_no_symlinks(path: &Path) -> Result<File> {
+    absolute(path)?;
+    let parts: Vec<_> = path.components().skip(1).collect();
+    let mut directory = File::open("/")?;
+    for (index, part) in parts.iter().enumerate() {
+        let Component::Normal(name) = part else {
+            bail!("unsafe artifact path");
+        };
+        let name = std::ffi::CString::new(name.as_bytes()).context("invalid artifact path")?;
+        let last = index + 1 == parts.len();
+        let flags = libc::O_RDONLY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | if last {
+                libc::O_NONBLOCK
+            } else {
+                libc::O_DIRECTORY
+            };
+        // SAFETY: directory and name stay live during openat; a successful fd
+        // is immediately transferred to File exactly once.
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error()).context("open artifact without symlinks");
+        }
+        let opened = unsafe { File::from_raw_fd(fd) };
+        if last {
+            let metadata = opened.metadata()?;
+            if !metadata.is_file() || metadata.nlink() != 1 {
+                bail!("artifact must be a regular file without hard links");
+            }
+            return Ok(opened);
+        }
+        directory = opened;
+    }
+    bail!("artifact path has no file")
 }
 
 pub fn overlaps(a: &Path, b: &Path) -> bool {
