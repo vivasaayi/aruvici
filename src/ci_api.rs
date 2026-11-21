@@ -1,10 +1,12 @@
 //! Private Unix-socket API: one bounded newline-delimited JSON request per connection.
 use crate::{ci, ci_store::Store, process, profiles::PlatformConfig, safety};
 use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     os::unix::{
         fs::PermissionsExt,
         net::{UnixListener, UnixStream},
@@ -26,7 +28,11 @@ pub fn dispatch(config: &PlatformConfig, request: Value) -> Result<Value> {
         "targets" => config
             .targets
             .iter()
-            .map(|t| Ok(json!({"id":t.id,"profile":t.profile,"plan":t.plan()?})))
+            .map(|t| {
+                let plan = t.plan()?;
+                let approved = ci::approved(config, &plan).is_ok();
+                Ok(json!({"id":t.id,"profile":t.profile,"repository":t.repository,"approval":{"approved":approved},"plan":plan}))
+            })
             .collect::<Result<Vec<_>>>()
             .map(Value::Array),
         "plan" => Ok(serde_json::to_value(config.target(target()?)?.plan()?)?),
@@ -36,25 +42,70 @@ pub fn dispatch(config: &PlatformConfig, request: Value) -> Result<Value> {
         "enqueue" => Ok(
             json!({"run_id":ci::enqueue(config,target()?,request["commit"].as_str().context("missing commit")?,request["key"].as_str().context("missing idempotency key")?,request.get("context").cloned().unwrap_or(Value::Null))?}),
         ),
+        "retry" => {
+            let previous = store.run(id()?)?;
+            let status = previous["status"].as_str().context("run status missing")?;
+            if !matches!(status, "failed" | "blocked" | "cancelled" | "interrupted") {
+                bail!("only failed, blocked, cancelled or interrupted runs can be retried");
+            }
+            let target = previous["target"].as_str().context("run target missing")?;
+            let commit = previous["commit"].as_str().context("run commit missing")?;
+            let plan = config.target(target)?.plan()?;
+            if previous["plan_digest"].as_str() != Some(&plan.digest) {
+                bail!("pipeline changed since the original run; inspect and enqueue a new run");
+            }
+            let key = request["key"].as_str().context("missing idempotency key")?;
+            let run_id = ci::enqueue(config, target, commit, key, previous["context"].clone())?;
+            Ok(json!({"run_id":run_id}))
+        }
         "cancel" => {
             store.cancel(id()?)?;
             store.run(id()?)
         }
         "artifact" => store.artifact_info(id()?),
-        "artifact_chunk" => {
+        "promotion_readiness" => {
             let info = store.artifact_info(id()?)?;
+            let run_id = info["run_id"].as_i64().context("artifact run missing")?;
+            let run = store.run(run_id)?;
             let path = Path::new(info["path"].as_str().context("artifact path missing")?);
             safety::absolute(path)?;
-            if !path.starts_with(config.state_dir.join("ci-runs")) {
-                bail!("artifact outside run storage");
+            let root = config.state_dir.join("ci-runs").join(run_id.to_string());
+            if !path.starts_with(&root) || path == root {
+                bail!("artifact outside owning run storage");
             }
-            let mut file = fs::File::open(path)?;
+            let mut file = safety::open_regular_no_symlinks(path)?;
+            let mut digest = Sha256::new();
+            let mut size = 0_u64;
+            let mut buffer = [0_u8; 65536];
+            loop {
+                let n = file.read(&mut buffer)?;
+                if n == 0 { break; }
+                size = size.checked_add(n as u64).context("artifact size overflow")?;
+                digest.update(&buffer[..n]);
+            }
+            if info["size"].as_u64() != Some(size) || info["sha256"].as_str() != Some(format!("{:x}", digest.finalize()).as_str()) {
+                bail!("artifact size or digest differs from recorded evidence");
+            }
+            Ok(json!({"artifact_id":id()?, "run_id":run_id, "target":run["target"], "commit":run["commit"], "plan_digest":run["plan_digest"], "kind":info["kind"], "stage":info["stage"], "path":info["path"], "sha256":info["sha256"], "size":size, "run_status":run["status"], "eligible":false, "promotion_eligible":false, "reason":"Artifact integrity verified; promotion policy and manual review are required", "manual_promotion_only":true}))
+        }
+        "artifact_chunk" | "artifact_chunk_base64" => {
+            let info = store.artifact_info(id()?)?;
+            let run_id = info["run_id"].as_i64().context("artifact run missing")?;
+            let path = Path::new(info["path"].as_str().context("artifact path missing")?);
+            safety::absolute(path)?;
+            let root = config.state_dir.join("ci-runs").join(run_id.to_string());
+            if !path.starts_with(&root) || path == root {
+                bail!("artifact outside owning run storage");
+            }
+            let mut file = safety::open_regular_no_symlinks(path)?;
             let offset = request["offset"].as_u64().unwrap_or(0);
             file.seek(SeekFrom::Start(offset))?;
-            let mut bytes = vec![0; 65536];
+            let mut bytes = vec![0; if method == "artifact_chunk_base64" { 524288 } else { 65536 }];
             let n = file.read(&mut bytes)?;
             bytes.truncate(n);
-            // Byte array avoids UTF-8 coercion and extra base64 dependency.
+            if method == "artifact_chunk_base64" {
+                return Ok(json!({"data_base64":STANDARD.encode(&bytes),"offset":offset,"next_offset":offset+n as u64,"eof":offset+n as u64>=info["size"].as_u64().unwrap_or(0),"sha256":info["sha256"]}));
+            }
             Ok(
                 json!({"bytes":bytes,"offset":offset,"next_offset":offset+n as u64,"eof":offset+n as u64>=info["size"].as_u64().unwrap_or(0),"sha256":info["sha256"]}),
             )
@@ -141,6 +192,7 @@ pub fn serve(config_path: &Path) -> Result<()> {
         while !process::interrupted() {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false)?;
                     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
                     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
                     let response = (|| -> Result<Value> {
@@ -161,8 +213,10 @@ pub fn serve(config_path: &Path) -> Result<()> {
                         Ok(v) => json!({"ok":true,"result":v}),
                         Err(e) => json!({"ok":false,"error":format!("{e:#}")}),
                     };
-                    let _ = serde_json::to_writer(&mut stream, &envelope);
-                    let _ = stream.write_all(b"\n");
+                    let mut writer = BufWriter::new(&mut stream);
+                    if serde_json::to_writer(&mut writer, &envelope).is_ok() {
+                        let _ = writer.write_all(b"\n").and_then(|_| writer.flush());
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(100))
