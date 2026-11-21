@@ -89,10 +89,12 @@ pub fn dispatch(config: &PlatformConfig, request: Value) -> Result<Value> {
         }
         "artifact_chunk" => {
             let info = store.artifact_info(id()?)?;
+            let run_id = info["run_id"].as_i64().context("artifact run missing")?;
             let path = Path::new(info["path"].as_str().context("artifact path missing")?);
             safety::absolute(path)?;
-            if !path.starts_with(config.state_dir.join("ci-runs")) {
-                bail!("artifact outside run storage");
+            let root = config.state_dir.join("ci-runs").join(run_id.to_string());
+            if !path.starts_with(&root) || path == root {
+                bail!("artifact outside owning run storage");
             }
             let mut file = safety::open_regular_no_symlinks(path)?;
             let offset = request["offset"].as_u64().unwrap_or(0);

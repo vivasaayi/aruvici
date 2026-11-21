@@ -129,6 +129,19 @@ fn arbitrary_paths_and_privileged_actions_are_unavailable() {
 }
 
 #[test]
+fn artifact_chunks_cannot_read_another_runs_storage() {
+    let (_temp, config, store, run) = config();
+    let other_run = store.enqueue("desktop", "def", "plan", "two", json!({})).unwrap();
+    let folder = config.state_dir.join("ci-runs").join(other_run.to_string());
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("other.bin");
+    std::fs::write(&path, b"other run").unwrap();
+    let mismatched_id = store.artifact(run, "package", "package", &path).unwrap();
+    assert!(dispatch(&config, json!({"method":"artifact_chunk","id":mismatched_id})).is_err());
+    assert!(dispatch(&config, json!({"method":"promotion_readiness","id":mismatched_id})).is_err());
+}
+
+#[test]
 fn logs_are_bounded_and_cancellation_is_durable() {
     let (_temp, config, store, run) = config();
     let folder = config.state_dir.join("ci-runs").join(run.to_string());
