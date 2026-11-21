@@ -1,4 +1,5 @@
 use aruvici::{ci_api, safety};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::json;
 use std::{
     fs,
@@ -60,6 +61,20 @@ fn foreground_service_serves_private_socket_and_stops_cleanly() {
         ci_api::request(&socket, json!({"method":"deploy"})).unwrap()["ok"],
         false
     );
+    // Exercise a response much larger than the socket buffer through the real
+    // server, not only dispatch(), to catch partial or truncated writes.
+    let store = aruvici::ci_store::Store::open(&state).unwrap();
+    let run = store.enqueue("fixture", "abc", "plan", "socket-artifact", json!({})).unwrap();
+    let directory = state.join("ci-runs").join(run.to_string());
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("socket.bin");
+    let expected: Vec<u8> = (0..524288).map(|i| (i % 256) as u8).collect();
+    fs::write(&path, &expected).unwrap();
+    let artifact = store.artifact(run, "package", "package", &path).unwrap();
+    let response = ci_api::request(&socket, json!({"method":"artifact_chunk_base64", "id":artifact})).unwrap();
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["result"]["next_offset"], 524288);
+    assert_eq!(STANDARD.decode(response["result"]["data_base64"].as_str().unwrap()).unwrap(), expected);
     // SAFETY: signal only the child PID owned by this test.
     unsafe {
         libc::kill(child.0.id() as i32, libc::SIGTERM);
