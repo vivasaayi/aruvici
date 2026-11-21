@@ -1,11 +1,12 @@
 //! Private Unix-socket API: one bounded newline-delimited JSON request per connection.
 use crate::{ci, ci_store::Store, process, profiles::PlatformConfig, safety};
 use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     os::unix::{
         fs::PermissionsExt,
         net::{UnixListener, UnixStream},
@@ -87,7 +88,7 @@ pub fn dispatch(config: &PlatformConfig, request: Value) -> Result<Value> {
             }
             Ok(json!({"artifact_id":id()?, "run_id":run_id, "target":run["target"], "commit":run["commit"], "plan_digest":run["plan_digest"], "kind":info["kind"], "stage":info["stage"], "path":info["path"], "sha256":info["sha256"], "size":size, "run_status":run["status"], "eligible":false, "promotion_eligible":false, "reason":"Artifact integrity verified; promotion policy and manual review are required", "manual_promotion_only":true}))
         }
-        "artifact_chunk" => {
+        "artifact_chunk" | "artifact_chunk_base64" => {
             let info = store.artifact_info(id()?)?;
             let run_id = info["run_id"].as_i64().context("artifact run missing")?;
             let path = Path::new(info["path"].as_str().context("artifact path missing")?);
@@ -99,10 +100,12 @@ pub fn dispatch(config: &PlatformConfig, request: Value) -> Result<Value> {
             let mut file = safety::open_regular_no_symlinks(path)?;
             let offset = request["offset"].as_u64().unwrap_or(0);
             file.seek(SeekFrom::Start(offset))?;
-            let mut bytes = vec![0; 65536];
+            let mut bytes = vec![0; if method == "artifact_chunk_base64" { 524288 } else { 65536 }];
             let n = file.read(&mut bytes)?;
             bytes.truncate(n);
-            // Byte array avoids UTF-8 coercion and extra base64 dependency.
+            if method == "artifact_chunk_base64" {
+                return Ok(json!({"data_base64":STANDARD.encode(&bytes),"offset":offset,"next_offset":offset+n as u64,"eof":offset+n as u64>=info["size"].as_u64().unwrap_or(0),"sha256":info["sha256"]}));
+            }
             Ok(
                 json!({"bytes":bytes,"offset":offset,"next_offset":offset+n as u64,"eof":offset+n as u64>=info["size"].as_u64().unwrap_or(0),"sha256":info["sha256"]}),
             )
@@ -189,6 +192,7 @@ pub fn serve(config_path: &Path) -> Result<()> {
         while !process::interrupted() {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false)?;
                     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
                     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
                     let response = (|| -> Result<Value> {
@@ -209,8 +213,10 @@ pub fn serve(config_path: &Path) -> Result<()> {
                         Ok(v) => json!({"ok":true,"result":v}),
                         Err(e) => json!({"ok":false,"error":format!("{e:#}")}),
                     };
-                    let _ = serde_json::to_writer(&mut stream, &envelope);
-                    let _ = stream.write_all(b"\n");
+                    let mut writer = BufWriter::new(&mut stream);
+                    if serde_json::to_writer(&mut writer, &envelope).is_ok() {
+                        let _ = writer.write_all(b"\n").and_then(|_| writer.flush());
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(100))

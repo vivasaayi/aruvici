@@ -207,6 +207,7 @@ artifact IDs rather than caller-selected filesystem paths.
 | `logs` | run `id`, `stage`, optional byte `offset` | Text chunk and next offset |
 | `artifact` | artifact `id` | Metadata, size and hash |
 | `artifact_chunk` | artifact `id`, optional byte `offset` | Byte array, next offset, EOF and hash |
+| `artifact_chunk_base64` | artifact `id`, optional byte `offset` | Base64 chunk, next offset, EOF and hash |
 
 The CLI can exercise that same protocol while `serve` is running:
 
@@ -220,6 +221,9 @@ Log and artifact reads return at most 65,536 bytes per request. Binary content i
 a JSON array of byte values, not UTF-8 or base64. Concatenate chunks in offset order
 and verify the completed file against the advertised SHA-256. Logs should be
 rendered as text, and package files offered as downloads.
+The optional `artifact_chunk_base64` method returns up to 524,288 bytes encoded
+as `data_base64`; clients should retain the legacy method for older services and
+verify the final decoded size and SHA-256 before committing a download.
 
 ## Visualization and promotion
 

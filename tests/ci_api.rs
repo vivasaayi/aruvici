@@ -1,5 +1,6 @@
 use aruvici::{ci_api::dispatch, ci_store::Store, profiles::PlatformConfig};
 use serde_json::{json, Value};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 fn config() -> (tempfile::TempDir, PlatformConfig, Store, i64) {
     let temp = aruvici::safety::tempdir().unwrap();
@@ -90,6 +91,25 @@ fn binary_artifact_chunks_are_bounded_and_lossless() {
 }
 
 #[test]
+fn base64_artifact_chunks_are_bounded_and_lossless() {
+    let (_temp, config, store, run) = config();
+    let folder = config.state_dir.join("ci-runs").join(run.to_string());
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("large.bin");
+    let original: Vec<u8> = (0..524301).map(|i| (i % 256) as u8).collect();
+    std::fs::write(&path, &original).unwrap();
+    let id = store.artifact(run, "package", "package", &path).unwrap();
+    let first = dispatch(&config, json!({"method":"artifact_chunk_base64","id":id})).unwrap();
+    let mut result = STANDARD.decode(first["data_base64"].as_str().unwrap()).unwrap();
+    assert_eq!(result.len(), 524288);
+    assert_eq!(first["eof"], false);
+    let second = dispatch(&config, json!({"method":"artifact_chunk_base64","id":id,"offset":first["next_offset"]})).unwrap();
+    result.extend(STANDARD.decode(second["data_base64"].as_str().unwrap()).unwrap());
+    assert_eq!(second["eof"], true);
+    assert_eq!(result, original);
+}
+
+#[test]
 fn arbitrary_paths_and_privileged_actions_are_unavailable() {
     let (temp, config, store, run) = config();
     let outside = temp.path().join("private.txt");
@@ -138,6 +158,7 @@ fn artifact_chunks_cannot_read_another_runs_storage() {
     std::fs::write(&path, b"other run").unwrap();
     let mismatched_id = store.artifact(run, "package", "package", &path).unwrap();
     assert!(dispatch(&config, json!({"method":"artifact_chunk","id":mismatched_id})).is_err());
+    assert!(dispatch(&config, json!({"method":"artifact_chunk_base64","id":mismatched_id})).is_err());
     assert!(dispatch(&config, json!({"method":"promotion_readiness","id":mismatched_id})).is_err());
 }
 
@@ -358,7 +379,7 @@ fn artifact_reads_reject_hard_links_to_other_files() {
     let id = store.artifact(run, "package", "package", &path).unwrap();
     let other = temp.path().join("outside-hard-link");
     std::fs::hard_link(&path, other).unwrap();
-    for method in ["artifact_chunk", "promotion_readiness"] {
+    for method in ["artifact_chunk", "artifact_chunk_base64", "promotion_readiness"] {
         let result = dispatch(&config, json!({"method": method, "id": id}));
         assert!(result.is_err(), "{method} accepted a hard-linked artifact");
     }
